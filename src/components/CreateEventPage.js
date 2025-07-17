@@ -150,65 +150,24 @@ const CreateEventPage = () => {
         admin_id: adminId,
         created_at: new Date().toISOString(),
       };
-      
       // Insert into 'events' table
       const { data, error } = await supabase
         .from('events')
         .insert([eventData])
         .select();
-        
       if (error) {
         alert('Failed to create event: ' + error.message);
         return;
       }
-      
       const createdEvent = data && data[0];
       if (!createdEvent) {
         alert('Event creation failed: No event returned');
         return;
       }
-
-      // If the event is public, send notifications to all suppliers
-      if (formData.visibility === 'public') {
-        try {
-          // Get all suppliers from the profiles table
-          const { data: suppliers, error: suppliersError } = await supabase
-            .from('profiles')
-            .select('email')
-            .eq('user_type', 'supplier');
-
-          if (suppliersError) {
-            console.error('Error fetching suppliers:', suppliersError);
-          } else if (suppliers && suppliers.length > 0) {
-            // Create notifications for each supplier
-            const notifications = suppliers.map(supplier => ({
-              supplier_email: supplier.email,
-              type: 'invitation',
-              content: `New event opportunity available: ${formData.name}`,
-              status: 'unread',
-              created_at: new Date().toISOString(),
-              event_id: createdEvent.id
-            }));
-
-            // Insert notifications
-            const { error: notificationError } = await supabase
-              .from('notifications')
-              .insert(notifications);
-
-            if (notificationError) {
-              console.error('Error creating notifications:', notificationError);
-            }
-          }
-        } catch (err) {
-          console.error('Error in notification creation:', err);
-        }
-      }
-
       // Store in localStorage for offline use (optional)
       const existingEvents = JSON.parse(localStorage.getItem('events')) || [];
       existingEvents.push(createdEvent);
       localStorage.setItem('events', JSON.stringify(existingEvents));
-      
       // Navigate directly to the event management page
       navigate(`/EventsManagementPage/${createdEvent.id}`);
     } catch (error) {
