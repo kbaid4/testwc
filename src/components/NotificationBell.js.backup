@@ -1,0 +1,678 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { supabase } from '../supabaseClient';
+import { FaBell, FaCheck, FaCheckDouble, FaTimes } from 'react-icons/fa';
+import styled from 'styled-components';
+import { connectionService } from '../services/connectionService';
+
+// Styled components for better organization and theming
+const NotificationContainer = styled.div`
+  position: relative;
+  display: inline-block;
+`;
+
+const BellButton = styled.button`
+  position: relative;
+  background: none;
+  border: none;
+  color: #333;
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 8px;
+  border-radius: 50%;
+  transition: background-color 0.2s ease;
+  
+  &:hover {
+    background-color: #f0f0f0;
+  }
+  
+  &:focus {
+    outline: 2px solid #4a90e2;
+    outline-offset: 2px;
+  }
+`;
+
+const Badge = styled.span`
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background-color: #e74c3c;
+  color: white;
+  border-radius: 50%;
+  padding: 2px 6px;
+  font-size: 0.7rem;
+  font-weight: bold;
+  min-width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+`;
+
+const Dropdown = styled.div`
+  position: absolute;
+  top: 100%;
+  right: 0;
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  width: 320px;
+  max-height: 400px;
+  overflow-y: auto;
+  z-index: 1000;
+  display: ${props => props.isOpen ? 'block' : 'none'};
+  
+  @media (max-width: 768px) {
+    width: 280px;
+    right: -10px;
+  }
+`;
+
+const Header = styled.div`
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid #eee;
+  background-color: #f8f9fa;
+  border-radius: 8px 8px 0 0;
+`;
+
+const Title = styled.h3`
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #333;
+`;
+
+const MarkAllButton = styled.button`
+  background: none;
+  border: none;
+  color: #666;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.8rem;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: background-color 0.2s ease;
+  
+  &:hover {
+    background-color: #e9ecef;
+  }
+`;
+
+const NotificationList = styled.div`
+  max-height: 300px;
+  overflow-y: auto;
+`;
+
+const NotificationItem = styled.div`
+  padding: 12px 16px;
+  border-bottom: 1px solid #f0f0f0;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+  background-color: ${props => props.unread ? '#f8f9ff' : 'white'};
+  
+  &:hover {
+    background-color: ${props => props.unread ? '#f0f4ff' : '#f8f9fa'};
+  }
+  
+  &:last-child {
+    border-bottom: none;
+  }
+`;
+
+const Message = styled.div`
+  font-size: 0.9rem;
+  color: #333;
+  line-height: 1.4;
+  margin-bottom: 4px;
+  display: flex;
+  align-items: flex-start;
+`;
+
+const Time = styled.div`
+  font-size: 0.8rem;
+  color: #666;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+`;
+
+const EmptyState = styled.div`
+  padding: 24px 16px;
+  text-align: center;
+  color: #666;
+  font-size: 0.9rem;
+`;
+
+const ReadIndicator = styled.span`
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #4a6cf7;
+  margin-right: 4px;
+`;
+
+const ActionButtons = styled.div`
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+`;
+
+const ActionButton = styled.button`
+  padding: 4px 12px;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+`;
+
+const AcceptButton = styled(ActionButton)`
+  background-color: #10b981;
+  color: white;
+  
+  &:hover:not(:disabled) {
+    background-color: #059669;
+  }
+`;
+
+const DeclineButton = styled(ActionButton)`
+  background-color: #ef4444;
+  color: white;
+  
+  &:hover:not(:disabled) {
+    background-color: #dc2626;
+  }
+`;
+
+const NotificationBell = ({ userType, userId, supplierEmail }) => {
+  const [notifications, setNotifications] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [isOpen, setIsOpen] = useState(false);
+  const dropdownRef = useRef(null);
+
+  console.log('NotificationBell rendered with:', { userType, userId, supplierEmail });
+
+  // Fetch notifications based on user type
+  const fetchNotifications = async () => {
+    try {
+      let query;
+      
+      if (userType === 'admin' && userId) {
+        // For admin users - get notifications where they are the target
+        query = supabase
+          .from('notifications')
+          .select(`
+            *,
+            events:event_id (name)
+          `)
+          .eq('admin_user_id', userId)
+          .order('created_at', { ascending: false })
+          .limit(10);
+      } else if (userType === 'supplier' && supplierEmail) {
+        // For supplier users - get notifications for the supplier email
+        console.log('Fetching notifications for supplier:', supplierEmail);
+        
+        const normalizedSupplierEmail = supplierEmail.toLowerCase().trim();
+        
+        query = supabase
+          .from('notifications')
+          .select(`
+            *,
+            events:event_id (name)
+          `)
+          .eq('supplier_email', normalizedSupplierEmail)
+          .order('created_at', { ascending: false })
+          .limit(20);
+      } else {
+        console.log('Missing required parameters for notification fetch:', { userType, userId, supplierEmail });
+        return;
+      }
+      
+      const { data, error } = await query;
+      
+      if (error) {
+        console.error('Error fetching notifications:', error);
+        setNotifications([]);
+        setUnreadCount(0);
+        return;
+      }
+      
+      console.log(`Fetched ${data?.length || 0} notifications:`, data);
+      
+      if (data) {
+        setNotifications(data);
+        const unread = data.filter(notification => notification.status === 'unread').length;
+        setUnreadCount(unread);
+        console.log(`Set unread count to: ${unread}`);
+      } else {
+        setNotifications([]);
+        setUnreadCount(0);
+      }
+    } catch (err) {
+      console.error('Unexpected error in fetchNotifications:', err);
+      setNotifications([]);
+      setUnreadCount(0);
+    }
+  };
+
+  useEffect(() => {
+    // Only setup if we have the required parameters
+    if ((userType === 'admin' && userId) || (userType === 'supplier' && supplierEmail)) {
+      fetchNotifications();
+    }
+  }, [userType, userId, supplierEmail]);
+  
+  // Create a separate effect for the subscription to better control its lifecycle
+  useEffect(() => {
+    let subscription = null;
+    
+    const setupSubscription = async () => {
+      try {
+        if ((userType === 'admin' && userId) || (userType === 'supplier' && supplierEmail)) {
+          console.log('Setting up real-time subscription for notifications...');
+          subscription = supabase
+            .channel('notifications')
+            .on('postgres_changes', {
+              event: '*',
+              schema: 'public',
+              table: 'notifications'
+            }, (payload) => {
+              console.log('Real-time notification update received:', payload);
+              fetchNotifications(); // Refresh notifications when changes occur
+            })
+            .subscribe();
+        }
+      } catch (error) {
+        console.error('Error setting up subscription:', error);
+      }
+    };
+    
+    setupSubscription();
+    
+    return () => {
+      if (subscription) {
+        console.log('Cleaning up notifications subscription');
+        supabase.removeChannel(subscription);
+      }
+    };
+  }, [userType, userId, supplierEmail]);
+
+  // Handle clicking outside to close dropdown
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setIsOpen(false);
+      }
+    };
+
+    if (isOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isOpen]);
+  
+  const toggleDropdown = () => {
+    setIsOpen(!isOpen);
+  };
+
+  // Mark a notification as read
+  const markAsRead = async (notificationId) => {
+    try {
+      let matchClause = {};
+      
+      if (userType === 'admin' && userId) {
+        matchClause = { id: notificationId, admin_user_id: userId };
+      } else if (userType === 'supplier' && supplierEmail) {
+        const normalizedEmail = supplierEmail.toLowerCase().trim();
+        matchClause = { id: notificationId, supplier_email: normalizedEmail };
+      }
+      
+      const { error } = await supabase
+        .from('notifications')
+        .update({ status: 'read' })
+        .match(matchClause);
+        
+      if (error) throw error;
+      
+      // Update local state
+      setNotifications(notifications.map(n => 
+        n.id === notificationId ? { ...n, status: 'read' } : n
+      ));
+      setUnreadCount(prev => Math.max(0, prev - 1));
+    } catch (err) {
+      console.error('Error marking notification as read:', err);
+    }
+  };
+
+  // Mark all notifications as read
+  const markAllAsRead = async () => {
+    try {
+      let matchClause = {};
+      
+      if (userType === 'admin' && userId) {
+        matchClause = { admin_user_id: userId };
+      } else if (userType === 'supplier' && supplierEmail) {
+        const normalizedEmail = supplierEmail.toLowerCase().trim();
+        matchClause = { supplier_email: normalizedEmail };
+      }
+      
+      const { error } = await supabase
+        .from('notifications')
+        .update({ status: 'read' })
+        .match(matchClause)
+        .eq('status', 'unread');
+        
+      if (error) throw error;
+      
+      // Update local state
+      setNotifications(notifications.map(n => ({ ...n, status: 'read' })));
+      setUnreadCount(0);
+    } catch (err) {
+      console.error('Error marking all notifications as read:', err);
+    }
+  };
+
+  // Helper to determine if a notification should be hidden based on user role
+  const shouldHideNotification = (notification, userType) => {
+    // If there's no type specified, show the notification
+    if (!notification.type) return false;
+    
+    // Hide admin-only notifications from suppliers
+    if (userType === 'supplier' && notification.type === 'admin_only') {
+      return true;
+    }
+    
+    return false;
+  };
+
+  // Enhanced message formatting logic
+  const formatNotificationMessage = (notification) => {
+    // If content exists, check if it's an admin message and skip it
+    // Always override for task assignment notifications
+    if (notification.type === 'task_assignment') {
+      return userType === 'supplier'
+        ? 'You have been assigned a new task for this event.'
+        : 'You assigned a new task for this event.';
+    }
+    // Connection request notifications
+    if (notification.type === 'connection_request') {
+      let requesterName = 'Someone';
+      try {
+        const content = JSON.parse(notification.content || '{}');
+        requesterName = content.requester_name || 'An event organizer';
+      } catch {
+        // Use the message field or default
+      }
+      return `${requesterName} invited you to connect`;
+    }
+    if (notification.type === 'connection_accepted') {
+      let supplierName = 'Supplier';
+      try {
+        const content = JSON.parse(notification.content || '{}');
+        supplierName = content.supplier_name || 'Supplier';
+      } catch {
+        // Use the message field or default
+      }
+      return `${supplierName} has accepted your connection request`;
+    }
+    if (notification.type === 'connection_declined') {
+      let supplierName = 'Supplier';
+      try {
+        const content = JSON.parse(notification.content || '{}');
+        supplierName = content.supplier_name || 'Supplier';
+      } catch {
+        // Use the message field or default
+      }
+      return `${supplierName} has declined your connection request`;
+    }
+    // Supplier invitation message
+    if (userType === 'supplier' && notification.type === 'invitation') {
+      let eventName = notification.events?.name;
+      if (!eventName) {
+        // Try to extract event name from existing content string: e.g., You have invited a supplier to "Fire"
+        if (notification.content) {
+          const match = notification.content.match(/"([^\"]+)"/);
+          if (match && match[1]) eventName = match[1];
+        }
+      }
+      if (!eventName && notification.event_id) {
+        eventName = `Event ID: ${notification.event_id}`;
+      }
+      // If we still could not resolve the event name, it likely means this was a public event
+      // broadcast where the name wasn't included. Show a generic public-event message.
+      if (!eventName || eventName === 'this event' || eventName.startsWith('Event ID')) {
+        return 'New public event added.';
+      }
+      return `You have been added to "${eventName || 'this event'}"`;
+    }
+    if (userType === 'admin' && notification.type === 'application_accepted') {
+      return `Application accepted notification for event "${notification.events?.name || notification.event_id || 'Unknown event'}"`;
+    }
+    if (userType === 'supplier' && notification.type === 'application_accepted') {
+      return `Your application for event "${notification.events?.name || notification.event_id || 'Unknown event'}" has been accepted`;
+    }
+    // Admin-only messages should not be shown to suppliers
+    if (userType === 'supplier' && notification.type === 'admin_only') {
+      return null;
+    }
+    // Default to showing content or message
+    return notification.content || notification.message || 'New notification';
+  };
+
+  // Format relative time
+  const formatRelativeTime = (timestamp) => {
+    const date = new Date(timestamp);
+    const now = new Date();
+    const diffInMs = now - date;
+    const diffInMinutes = Math.floor(diffInMs / (1000 * 60));
+    const diffInHours = Math.floor(diffInMinutes / 60);
+    const diffDays = Math.floor(diffInHours / 24);
+
+    if (diffInMinutes < 1) return 'Just now';
+    if (diffInMinutes < 60) return `${diffInMinutes}m ago`;
+    if (diffInHours < 24) return `${diffInHours}h ago`;
+    if (diffDays < 7) return `${diffDays}d ago`;
+    return date.toLocaleDateString();
+  };
+
+  // Handle connection request actions
+  const handleAcceptConnection = async (connectionRequestId) => {
+    try {
+      // Get current user data
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single();
+      
+      const supplierData = {
+        id: user.id,
+        name: profile?.full_name || profile?.company_name || user.email,
+        email: user.email
+      };
+      
+      const { error } = await connectionService.acceptConnectionRequest(
+        connectionRequestId, 
+        supplierData
+      );
+      
+      if (error) {
+        alert('Error accepting connection request: ' + error);
+      } else {
+        // Mark the notification as read and refresh notifications
+        await markAsRead(connectionRequestId);
+        fetchNotifications();
+        alert('Connection request accepted successfully!');
+      }
+    } catch (error) {
+      console.error('Error accepting connection:', error);
+      alert('Error accepting connection request');
+    }
+  };
+  
+  const handleDeclineConnection = async (connectionRequestId) => {
+    try {
+      // Get current user data
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single();
+      
+      const supplierData = {
+        id: user.id,
+        name: profile?.full_name || profile?.company_name || user.email,
+        email: user.email
+      };
+      
+      const { error } = await connectionService.declineConnectionRequest(
+        connectionRequestId, 
+        supplierData
+      );
+      
+      if (error) {
+        alert('Error declining connection request: ' + error);
+      } else {
+        // Mark the notification as read and refresh notifications
+        await markAsRead(connectionRequestId);
+        fetchNotifications();
+        alert('Connection request declined.');
+      }
+    } catch (error) {
+      console.error('Error declining connection:', error);
+      alert('Error declining connection request');
+    }
+  };
+
+  // Close dropdown when clicking outside or pressing Escape
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setIsOpen(false);
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
+
+  return (
+    <NotificationContainer>
+      <BellButton 
+        onClick={toggleDropdown}
+        aria-label={`Notifications ${unreadCount > 0 ? `(${unreadCount} unread)` : ''}`}
+      >
+        <FaBell />
+        {unreadCount > 0 && (
+          <Badge aria-hidden="true">
+            {unreadCount > 99 ? '99+' : unreadCount}
+          </Badge>
+        )}
+      </BellButton>
+
+      <Dropdown 
+        ref={dropdownRef}
+        isOpen={isOpen}
+        aria-hidden={!isOpen}
+      >
+        <Header>
+          <Title>Notifications</Title>
+          {unreadCount > 0 ? (
+            <MarkAllButton onClick={markAllAsRead}>
+              <FaCheckDouble size={12} />
+              <span>Mark all as read</span>
+            </MarkAllButton>
+          ) : (
+            <MarkAllButton onClick={() => setIsOpen(false)}>
+              <FaTimes size={14} />
+            </MarkAllButton>
+          )}
+        </Header>
+
+        <NotificationList>
+          {notifications.length === 0 ? (
+            <EmptyState>No notifications yet</EmptyState>
+          ) : (
+            notifications
+              .filter(notification => !shouldHideNotification(notification, userType))
+              .map(notification => {
+                const message = formatNotificationMessage(notification);
+                if (message === null) return null;
+                
+                const isUnread = notification.status === 'unread';
+                
+                // Check if this is a connection request notification that needs action buttons
+                const isConnectionRequest = notification.type === 'connection_request' && 
+                                          userType === 'supplier' && 
+                                          isUnread;
+                
+                return (
+                  <NotificationItem
+                    key={notification.id}
+                    unread={isUnread}
+                    onClick={() => !isConnectionRequest && isUnread && markAsRead(notification.id)}
+                  >
+                    <Message>
+                      {isUnread && <ReadIndicator aria-hidden="true" />}
+                      {message}
+                    </Message>
+                    <Time>
+                      {isUnread && <FaCheck size={10} />}
+                      {formatRelativeTime(notification.created_at)}
+                    </Time>
+                    {isConnectionRequest && notification.connection_request_id && (
+                      <ActionButtons>
+                        <AcceptButton 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleAcceptConnection(notification.connection_request_id);
+                          }}
+                        >
+                          Accept
+                        </AcceptButton>
+                        <DeclineButton 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeclineConnection(notification.connection_request_id);
+                          }}
+                        >
+                          Decline
+                        </DeclineButton>
+                      </ActionButtons>
+                    )}
+                  </NotificationItem>
+                );
+              })
+              .filter(Boolean)
+          )}
+        </NotificationList>
+      </Dropdown>
+    </NotificationContainer>
+  );
+};
+
+export default NotificationBell;
