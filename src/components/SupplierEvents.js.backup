@@ -1,0 +1,771 @@
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { supabase } from '../supabaseClient';
+import { updateEventSuppliersWithUserId } from '../utils/updateSupplierEvents';
+
+// UserAvatar component
+const UserAvatar = () => {
+  const [initial, setInitial] = useState('S');
+  React.useEffect(() => {
+    async function fetchInitial() {
+      let name = localStorage.getItem('supplierName') || localStorage.getItem('signupName') || 'Supplier';
+      try {
+        const { data: { user } } = await import('../supabaseClient').then(m => m.supabase.auth.getUser());
+        if (user) {
+          const { data: profile } = await import('../supabaseClient').then(m => m.supabase
+            .from('profiles')
+            .select('full_name')
+            .eq('id', user.id)
+            .single());
+          if (profile && profile.full_name) {
+            name = profile.full_name;
+          }
+        }
+      } catch {}
+      setInitial(name.charAt(0).toUpperCase());
+    }
+    fetchInitial();
+  }, []);
+  return (
+    <div
+      className="user-avatar"
+      style={{
+        width: '32px',
+        height: '32px',
+        borderRadius: '50%',
+        backgroundColor: '#A888B5',
+        color: 'white',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontWeight: 'bold',
+        fontSize: '16px',
+        flexShrink: 0,
+        cursor: 'pointer',
+        marginRight: '4px'
+      }}
+      title={initial}
+    >
+      {initial}
+    </div>
+  );
+};
+
+const mainNavItems = [
+  { name: 'Home', path: '/SupplierHomepage' },
+  { name: 'My Events', path: '/SupplierEvents' },
+  { name: 'Messages', path: '/SupplierMessagesPage' }
+];
+const userNavItems = [
+  { name: 'My Work', path: '/SupplierWork' },
+  { name: 'My Team', path: '/SupplierTeam' }
+];
+
+const SupplierEvents = () => {
+  const navigate = useNavigate();
+  const [activeNav, setActiveNav] = useState('My Events');
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [userId, setUserId] = useState(null);
+  const [subscription, setSubscription] = useState(null);
+
+  // Function to fetch and update events
+  const fetchAndUpdateEvents = useCallback(async () => {
+    console.log('Fetching supplier events...');
+    setLoading(true);
+    setError(null);
+    
+    try {
+      // Step 1: Get current user details (ID and email)
+      let userEmail = null;
+      let currentUserId = userId;
+      
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          userEmail = user.email;
+          currentUserId = user.id;
+          console.log(`Current user details - ID: ${currentUserId}, Email: ${userEmail}`);
+        }
+      } catch (authErr) {
+        console.error('Error getting authenticated user:', authErr);
+      }
+      
+      // If we don't have a user ID yet, try to get it from the state
+      if (!currentUserId && userId) {
+        currentUserId = userId;
+      }
+      
+      if (!currentUserId) {
+        console.error('No user ID available for fetching events');
+        setError('User not authenticated. Please log in again.');
+        return;
+      }
+      
+      // Fetch events from multiple sources
+      let allEvents = [];
+      
+      // 1. Get events where user is directly assigned in event_suppliers
+      const { data: supplierEvents, error: supplierError } = await supabase
+        .from('event_suppliers')
+        .select('*, events(*)')
+        .or(`supplier_user_id.eq.${currentUserId},supplier_email.eq.${userEmail ? `'${userEmail}'` : 'NULL'}`);
+      
+      if (supplierError) {
+        console.error('Error fetching supplier events:', supplierError);
+        throw supplierError;
+      }
+      
+      if (supplierEvents && supplierEvents.length > 0) {
+        allEvents = supplierEvents.map(es => ({
+          ...es.events,
+          invitationStatus: es.status
+        }));
+      }
+      
+      // 2. Get events where user is invited
+      const { data: invites, error: invitesError } = await supabase
+        .from('invites')
+        .select('*')
+        .or(`supplier_email.eq.${userEmail ? `'${userEmail}'` : 'NULL'},supplier_user_id.eq.${currentUserId}`);
+      
+      if (invitesError) {
+        console.error('Error fetching invites:', invitesError);
+        throw invitesError;
+      }
+      
+      // Process invites to get event details
+      if (invites && invites.length > 0) {
+        const invitePromises = invites.map(async (invite) => {
+          try {
+            const { data: eventData } = await supabase
+              .from('events')
+              .select('*')
+              .eq('id', invite.event_id)
+              .single();
+              
+            if (eventData) {
+              return {
+                ...eventData,
+                invitationStatus: invite.status || 'pending',
+                isFromInvite: true
+              };
+            } else {
+              // Create a placeholder event if the event doesn't exist
+              let adminName = 'Event Organizer';
+              if (invite.invited_by_admin_id) {
+                try {
+                  const { data: adminData } = await supabase
+                    .from('profiles')
+                    .select('full_name, email')
+                    .eq('id', invite.invited_by_admin_id)
+                    .maybeSingle();
+                    
+                  if (adminData) {
+                    adminName = adminData.full_name || adminData.email || 'Event Organizer';
+                  }
+                } catch (adminErr) {
+                  console.error('Error fetching admin info:', adminErr);
+                }
+              }
+              
+              return {
+                id: invite.event_id,
+                name: `${adminName}'s Event`,
+                description: `You've been invited to this event`,
+                type: 'event',
+                status: invite.status || 'pending',
+                start_date: invite.created_at || new Date().toISOString(),
+                end_date: invite.created_at || new Date().toISOString(),
+                location: 'Location not specified',
+                isPlaceholder: true,
+                created_at: invite.created_at || new Date().toISOString(),
+                invitationStatus: invite.status || 'pending',
+                isFromInvite: true
+              };
+            }
+          } catch (err) {
+            console.error(`Error processing invite for event ${invite.event_id}:`, err);
+            return null;
+          }
+        });
+        
+        const inviteResults = await Promise.all(invitePromises);
+        const validInviteEvents = inviteResults.filter(event => event !== null);
+        
+        // Merge with existing events, avoiding duplicates
+        validInviteEvents.forEach(inviteEvent => {
+          if (!allEvents.some(e => e.id === inviteEvent.id)) {
+            allEvents.push(inviteEvent);
+          }
+        });
+      }
+      
+      // Process and sort events
+      const sortedEvents = allEvents.sort((a, b) => {
+        if (a.start_date && b.start_date) {
+          return new Date(b.start_date) - new Date(a.start_date);
+        }
+        if (a.start_date) return -1;
+        if (b.start_date) return 1;
+        if (a.created_at && b.created_at) {
+          return new Date(b.created_at) - new Date(a.created_at);
+        }
+        return 0;
+      });
+      
+      // Map to camelCase for UI consistency
+      const camelEvents = sortedEvents.map(event => ({
+        id: event.id,
+        name: event.name || 'Untitled Event',
+        description: event.description || '',
+        type: event.type || 'event',
+        subType: event.sub_type || event.subType || '',
+        location: event.location || 'Location TBD',
+        startDate: event.start_date || event.startDate || new Date().toISOString(),
+        endDate: event.end_date || event.endDate || new Date().toISOString(),
+        visibility: event.visibility || 'private',
+        budget: event.budget || 0,
+        status: event.status || 'pending',
+        imageUrl: event.image_url || event.imageUrl || '',
+        isPlaceholder: event.is_placeholder || event.isPlaceholder || false,
+        adminId: event.admin_id || event.adminId,
+        invitationStatus: event.invitationStatus,
+        isFromInvite: event.isFromInvite || false,
+        createdAt: event.created_at || event.createdAt || new Date().toISOString(),
+        updatedAt: event.updated_at || event.updatedAt || new Date().toISOString()
+      }));
+      
+      // Save to localStorage for offline use
+      try {
+        localStorage.setItem('supplierEvents', JSON.stringify(camelEvents));
+        console.log('Saved events to localStorage, total:', camelEvents.length);
+      } catch (storageErr) {
+        console.warn('Failed to save events to localStorage:', storageErr);
+      }
+      
+      setEvents(camelEvents);
+      return camelEvents;
+      
+    } catch (error) {
+      console.error('Error in fetchAndUpdateEvents:', error);
+      setError('Failed to update events. Please try again.');
+      
+      // Try to load from localStorage as fallback
+      try {
+        const savedEvents = localStorage.getItem('supplierEvents');
+        if (savedEvents) {
+          const parsedEvents = JSON.parse(savedEvents);
+          console.log('Loading events from localStorage fallback:', parsedEvents);
+          setEvents(parsedEvents);
+          setError(null);
+          return parsedEvents;
+        }
+      } catch (storageErr) {
+        console.error('Error loading events from localStorage:', storageErr);
+      }
+      
+      throw error;
+    } finally {
+      setLoading(false);
+    }
+  }, [userId]);
+
+  // Set up real-time subscriptions
+  useEffect(() => {
+    if (!userId) return;
+    
+    console.log('Setting up real-time subscriptions for user:', userId);
+    
+    // Create a unique channel name for this user's session
+    const channelName = `supplier-events-${userId}-${Date.now()}`;
+    
+    try {
+      // Subscribe to events table changes
+      const eventsSubscription = supabase
+        .channel(channelName + '-events')
+        .on('postgres_changes', 
+          { 
+            event: '*',
+            schema: 'public',
+            table: 'events',
+            filter: `admin_id=eq.${userId}`
+          }, 
+          (payload) => {
+            console.log('Event change received:', payload);
+            fetchAndUpdateEvents();
+          }
+        )
+        .subscribe((status, err) => {
+          if (err) {
+            console.error('Error subscribing to events:', err);
+          } else {
+            console.log('Events subscription status:', status);
+          }
+        });
+
+      // Subscribe to event_suppliers table changes
+      const eventSuppliersSubscription = supabase
+        .channel(channelName + '-suppliers')
+        .on('postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'event_suppliers',
+            filter: `supplier_user_id=eq.${userId}`
+          },
+          (payload) => {
+            console.log('Event supplier change received:', payload);
+            fetchAndUpdateEvents();
+          }
+        )
+        .subscribe((status, err) => {
+          if (err) {
+            console.error('Error subscribing to event_suppliers:', err);
+          } else {
+            console.log('Event suppliers subscription status:', status);
+          }
+        });
+
+      setSubscription({ 
+        events: eventsSubscription, 
+        suppliers: eventSuppliersSubscription 
+      });
+
+      // Initial fetch
+      fetchAndUpdateEvents();
+      
+      // Set up periodic refresh (every 5 minutes) as a fallback
+      const refreshInterval = setInterval(fetchAndUpdateEvents, 5 * 60 * 1000);
+
+      // Cleanup function
+      return () => {
+        console.log('Cleaning up subscriptions');
+        try {
+          if (eventsSubscription) {
+            supabase.removeChannel(eventsSubscription);
+          }
+          if (eventSuppliersSubscription) {
+            supabase.removeChannel(eventSuppliersSubscription);
+          }
+          clearInterval(refreshInterval);
+        } catch (cleanupErr) {
+          console.error('Error during cleanup:', cleanupErr);
+        }
+      };
+    } catch (err) {
+      console.error('Error setting up subscriptions:', err);
+    }
+  }, [userId]); // Removed fetchAndUpdateEvents from deps to prevent loops
+
+  // Fetch the current user ID and ensure event_suppliers table is updated
+
+
+  // Check if required tables exist
+  const checkTables = async () => {
+    try {
+      // Check events table
+      const { error: eventsError } = await supabase
+        .from('events')
+        .select('*')
+        .limit(1);
+      
+      if (eventsError) {
+        console.error('Error accessing events table:', eventsError);
+      }
+      
+      // Check event_suppliers table
+      const { error: eventSuppliersError } = await supabase
+        .from('event_suppliers')
+        .select('*')
+        .limit(1);
+        
+      if (eventSuppliersError) {
+        console.error('Error accessing event_suppliers table:', eventSuppliersError);
+      }
+    } catch (err) {
+      console.error('Error checking database tables:', err);
+    }
+  };
+
+  useEffect(() => {
+    // Run table check on component mount
+    checkTables();
+    
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      console.log('Auth state changed:', event);
+      if (session?.user) {
+        setUserId(session.user.id);
+        
+        // Update event_suppliers table with user ID when auth state changes
+        // This handles both initial login and email verification
+        if (session.user.id && session.user.email) {
+          updateEventSuppliersWithUserId(session.user.id, session.user.email)
+            .then(result => {
+              console.log('Event suppliers update result:', result);
+            })
+            .catch(err => {
+              console.error('Failed to update event_suppliers table:', err);
+            });
+        }
+      }
+    });
+
+    // Initial check for current user
+    async function fetchCurrentUser() {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          setUserId(user.id);
+          
+          // Also attempt to update event_suppliers on component mount
+          if (user.email) {
+            updateEventSuppliersWithUserId(user.id, user.email)
+              .then(result => {
+                console.log('Initial event suppliers update result:', result);
+              })
+              .catch(err => {
+                console.error('Failed to update event_suppliers table:', err);
+              });
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching current user:', error);
+      }
+    }
+    fetchCurrentUser();
+
+    // Cleanup subscription
+    return () => {
+      subscription?.unsubscribe();
+    };
+  }, []);
+
+  // Fetch events for this supplier using multiple sources to ensure persistence across logins
+  const processEvent = async (event) => {
+    if (!event) return null;
+    
+    const eventId = event.id || event.event_id;
+    try {
+      // If event is already processed, return it as is
+      if (event.name && event.type) {
+        return {
+          ...event,
+          id: eventId,
+          isPlaceholder: event.isPlaceholder || false
+        };
+      }
+      
+      // If this is an invite, create a placeholder event
+      if (event.isFromInvite || event.isPlaceholder) {
+        let adminName = 'Event Organizer';
+          }
+        } catch (adminErr) {
+          console.error('Error fetching admin info:', adminErr);
+        }
+      }
+      
+      return {
+        id: eventId,
+        name: event.name || `${adminName}'s Event`,
+        description: event.description || `You've been invited to this event`,
+        type: 'event',
+        status: event.status || 'pending',
+        start_date: event.start_date || event.created_at || new Date().toISOString(),
+        end_date: event.end_date || event.created_at || new Date().toISOString(),
+        location: event.location || 'Location not specified',
+        isPlaceholder: true,
+        created_at: event.created_at || new Date().toISOString(),
+        invitationStatus: event.status || 'pending',
+        isFromInvite: true
+      };
+    }
+    
+    // For existing events, ensure all required fields are present
+    return {
+      ...event,
+      id: eventId,
+      isPlaceholder: false,
+      status: event.status || 'active',
+      created_at: event.created_at || new Date().toISOString()
+    };
+    
+  } catch (err) {
+    console.error('Error processing event:', err);
+    return {
+      id: event?.id || 'unknown',
+      name: 'Error Loading Event',
+      type: 'event',
+      status: 'error',
+      isPlaceholder: true,
+      created_at: new Date().toISOString(),
+      error: err.message
+    };
+  }
+};
+          console.error('Error loading events from localStorage:', storageErr);
+        }
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    fetchSupplierEvents();
+    
+    // Refresh events whenever userId changes OR after 2 seconds (to handle post-confirmation load)
+    const postLoginRefresh = setTimeout(() => {
+      fetchSupplierEvents();
+    }, 2000);
+    
+    return () => clearTimeout(postLoginRefresh);
+  }, [userId, fetchSupplierEvents]);
+
+  return (
+    <div className="supplier-events-root" style={{ backgroundColor: '#A888B5', minHeight: '100vh', fontFamily: 'Arial, sans-serif', color: '#441752' }}>
+      <nav className="top-nav">
+        <div className="nav-section left">
+          <img 
+            src={`${process.env.PUBLIC_URL}/images/landingpage/logo.png`} 
+            alt="CITADA Logo"
+            className="nav-logo"
+          />
+          {mainNavItems.map(item => (
+            <button
+              key={item.name}
+              className={`nav-btn${activeNav === item.name ? ' active' : ''}`}
+              onClick={() => {
+                setActiveNav(item.name);
+                navigate(item.path);
+              }}
+            >
+              {item.name}
+            </button>
+          ))}
+        </div>
+        <div className="nav-section right" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          {userNavItems.map(item => (
+            <button
+              key={item.name}
+              className="nav-btn"
+              onClick={() => {
+                setActiveNav(item.name);
+                navigate(item.path);
+              }}
+            >
+              {item.name}
+            </button>
+          ))}
+          <UserAvatar />
+        </div>
+      </nav>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 20px' }}>
+        <h1 className="supplier-events-title" style={{ fontSize: '32px', fontWeight: 'bold', marginBottom: '24px' }}>My Events</h1>
+        <button 
+          onClick={handleManualRefresh}
+          disabled={loading}
+          style={{
+            padding: '8px 16px',
+            backgroundColor: '#441752',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            opacity: loading ? 0.7 : 1,
+            pointerEvents: loading ? 'none' : 'auto'
+          }}
+        >
+          {loading ? 'Refreshing...' : 'Refresh Events'}
+          <span>🔄</span>
+        </button>
+      </div>
+      
+      <div className="events-container" style={{ padding: '0 20px', maxWidth: '1200px', margin: '0 auto' }}>
+        {loading ? (
+          <div style={{ textAlign: 'center', padding: '40px 0' }}>Loading events...</div>
+        ) : error ? (
+          <div style={{ color: 'red', textAlign: 'center', padding: '20px' }}>{error}</div>
+        ) : events.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '40px', backgroundColor: 'rgba(255, 255, 255, 0.7)', borderRadius: '8px' }}>
+            <p style={{ fontSize: '18px', color: '#441752' }}>You don't have any events yet.</p>
+            <p style={{ fontSize: '14px', color: '#666' }}>Events will appear here when you're invited by an organizer.</p>
+          </div>
+        ) : (
+          <div className="events-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '20px' }}>
+            {events.map(event => (
+              <div 
+                key={event.id} 
+                className="event-card" 
+                style={{
+                  backgroundColor: 'white',
+                  borderRadius: '8px',
+                  padding: '20px',
+                  boxShadow: '0 2px 10px rgba(0,0,0,0.1)',
+                  cursor: 'pointer',
+                  transition: 'transform 0.2s ease, box-shadow 0.2s ease'
+                }}
+                onClick={() => navigate(`/SupplierEventDetail/${event.id}`)}
+              >
+                <h3 style={{ color: '#441752', marginBottom: '12px', fontSize: '20px', borderBottom: '2px solid #A888B5', paddingBottom: '8px' }}>
+                  {event.name || 'Untitled Event'}
+                </h3>
+                
+                {/* Event Details Section - Admin entered fields */}
+                <div style={{ fontSize: '14px', color: '#444', marginBottom: '15px', backgroundColor: '#f9f5fc', padding: '10px', borderRadius: '6px' }}>
+                  {/* Type and Sub-type - Admin entered */}
+                  <div style={{ marginBottom: '8px', display: 'flex', alignItems: 'flex-start', gap: '4px' }}>
+                    <span style={{ color: '#A888B5', fontWeight: 'bold', fontSize: '16px', marginRight: '2px' }}>🏷️</span>
+                    <div>
+                      <strong>Type:</strong> {event.type}
+                      {event.subType && (
+                        <span> - {event.subType}</span>
+                      )} 
+                    </div>
+                  </div>
+
+                  {/* Location - Admin entered */}
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: '4px' }}>
+                    <span style={{ color: '#A888B5', fontWeight: 'bold', fontSize: '16px', marginRight: '2px' }}>📍</span>
+                    <div>
+                      <strong>Location:</strong> {event.location}
+                    </div>
+                  </div>
+
+                  {/* Budget - Admin entered */}
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: '4px' }}>
+                    <span style={{ color: '#A888B5', fontWeight: 'bold', fontSize: '16px', marginRight: '2px' }}>💰</span>
+                    <div>
+                      <strong>Budget:</strong> {typeof event.budget === 'number' 
+                         ? `$${event.budget.toLocaleString()}` 
+                         : event.budget} 
+                    </div>
+                  </div>
+
+                  {/* Date information - Admin entered */}
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: '4px' }}>
+                    <span style={{ color: '#A888B5', fontWeight: 'bold', fontSize: '16px', marginRight: '2px' }}>📅</span>
+                    <div>
+                      <strong>Date:</strong> {event.startDate 
+                        ? new Date(event.startDate).toLocaleDateString() 
+                        : 'Not specified'}
+                      {event.endDate && event.endDate !== event.startDate && 
+                        <div style={{ marginTop: '2px' }}>
+                          <strong>End Date:</strong> {new Date(event.endDate).toLocaleDateString()}
+                        </div>}
+                    </div>
+                  </div>
+                </div>
+                
+                {/* Footer with status */}
+                <div style={{ marginTop: 'auto', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  
+                  
+                  <span style={{ fontSize: '13px', color: '#777', fontStyle: 'italic' }}>
+                    Click to view details
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}      
+      </div>
+      <style jsx="true">{`
+        body {
+          margin: 0;
+          padding: 0;
+        }
+        .top-nav {
+          margin-top: 0;
+          margin-bottom: 0;
+          padding-top: 0;
+          padding-bottom: 0;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding-left: 32px;
+          padding-right: 32px;
+          height: 64px;
+          background: #441752;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+          position: sticky;
+          top: 0;
+          z-index: 100;
+        }
+        .nav-section {
+          display: flex;
+          align-items: center;
+          gap: 24px;
+        }
+        .nav-logo {
+          height: 28px;
+          margin-right: 16px;
+        }
+        .nav-btn {
+          padding: 8px 16px;
+          border: none;
+          background: none;
+          color: #A888B5;
+          font-size: 14px;
+          font-weight: 500;
+          cursor: pointer;
+          border-radius: 6px;
+          transition: all 0.2s ease;
+        }
+        .nav-btn:hover {
+          background: #A888B5;
+          color: #441752;
+        }
+        .nav-btn.active {
+          color: #A888B5;
+          background: #441752;
+        }
+        .user-avatar {
+          width: 32px;
+          height: 32px;
+          border-radius: 50%;
+          background-color: #A888B5;
+          color: white;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-weight: bold;
+          font-size: 16px;
+          flex-shrink: 0;
+          cursor: pointer;
+          margin-right: 4px;
+        }
+        @media (max-width: 900px) {
+          .supplier-events-root {
+            padding: 1rem;
+          }
+        }
+        @media (max-width: 600px) {
+          .top-nav {
+            flex-direction: column;
+            height: auto;
+            padding: 8px 4px;
+            gap: 8px;
+          }
+          .nav-section {
+            gap: 8px;
+          }
+          .supplier-events-root {
+            padding: 16px 4px !important;
+          }
+          .supplier-events-title {
+            font-size: 20px !important;
+            margin-bottom: 12px !important;
+          }
+          .supplier-events-desc {
+            font-size: 14px !important;
+          }
+        }
+      `}</style>
+    </div>
+  );
+};
+
+export default SupplierEvents;
